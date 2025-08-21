@@ -59,6 +59,59 @@ app.post('/send-otp', async (req, res) => {
   }
 });
 
+// ------------------ MODELS ------------------
+const models = {
+  alphabet: {
+    url: "https://teachablemachine.withgoogle.com/models/WXYVjkR9b/",
+    model: null,
+  },
+  words: {
+    url: "https://teachablemachine.withgoogle.com/models/mPUpHpKe6/",
+    model: null,
+  },
+};
+
+// Load all models on startup
+(async () => {
+  for (const key in models) {
+    const m = models[key];
+    try {
+      m.model = await tmImage.load(m.url + "model.json", m.url + "metadata.json");
+      console.log(`✅ Loaded model: ${key}`);
+    } catch (err) {
+      console.error(`❌ Error loading model ${key}:`, err.message);
+    }
+  }
+})();
+
+// Predict route
+app.post('/predict/:model', upload.single('image'), async (req, res) => {
+  const key = req.params.model;
+  if (!models[key] || !models[key].model) {
+    return res.status(400).json({ error: "Invalid model" });
+  }
+
+  try {
+    const img = await loadImage(req.file.buffer);
+    const canvas = createCanvas(224, 224);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, 224, 224);
+
+    const prediction = await models[key].model.predict(canvas);
+    const highest = prediction.reduce((a, b) =>
+      a.probability > b.probability ? a : b
+    );
+
+    res.json({
+      label: highest.className,
+      confidence: (highest.probability * 100).toFixed(1) + "%",
+    });
+  } catch (err) {
+    console.error("Prediction error:", err.message);
+    res.status(500).json({ error: "Prediction failed" });
+  }
+});
+
 // Route: Cloudinary search
 app.get('/api/search', async (req, res) => {
   const searchQuery = (req.query.q || '').toLowerCase().replace(/[^a-z0-9]/g, '');
