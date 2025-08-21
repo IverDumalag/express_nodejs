@@ -110,13 +110,14 @@ const models = {
   words: { path: "./models/words/model.json", model: null, labels: [] },
 };
 
-async function loadModel(name, path) {
+async function loadModel(name, relativePath) {
   try {
-    const model = await tf.loadGraphModel(`file://${path}`);
+    const absPath = path.join(__dirname, relativePath);
+    const model = await tf.loadLayersModel(`file://${absPath}`);
     models[name].model = model;
 
     // Load metadata.json to get labels
-    const metadataPath = path.replace("model.json", "metadata.json");
+    const metadataPath = absPath.replace("model.json", "metadata.json");
     if (fs.existsSync(metadataPath)) {
       const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
       models[name].labels = metadata.labels || [];
