@@ -175,6 +175,36 @@ app.post("/predict/:model", upload.single("image"), async (req, res) => {
   }
 });
 
+// ================= Keep-Alive & Health Endpoints =================
+app.get("/", (req, res) => {
+  res.json({
+    service: "FSL Express Node.js Backend",
+    status: "alive",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    version: "1.0.0"
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    service: "express-nodejs"
+  });
+});
+
+app.get("/wake", (req, res) => {
+  const now = new Date().toISOString();
+  console.log(`🌅 Wake-up ping received at ${now}`);
+  res.json({
+    message: "Service is awake!",
+    timestamp: now,
+    status: "active"
+  });
+});
+
 // ================= Start Server =================
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
