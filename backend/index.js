@@ -105,35 +105,33 @@ app.get("/api/search", async (req, res) => {
 });
 
 // ================= ML MODELS =================
-const models = {
-  alphabet: { path: "./models/alphabet/model.json", model: null, labels: [] },
-  words: { path: "./models/words/model.json", model: null, labels: [] },
+const modelConfigs = {
+  alphabet: { path: "./models/alphabet/model.json", labelsPath: "./models/alphabet/metadata.json" },
+  words: { path: "./models/words/model.json", labelsPath: "./models/words/metadata.json" },
 };
 
-async function loadModel(name, relativePath) {
-  try {
-    const absPath = path.join(__dirname, relativePath);
-    const model = await tf.loadLayersModel(`file://${absPath}`);
-    models[name].model = model;
+const loadedModels = {};
 
-    // Load metadata.json to get labels
-    const metadataPath = absPath.replace("model.json", "metadata.json");
+async function getModel(name) {
+  if (loadedModels[name]) return loadedModels[name];
+  const config = modelConfigs[name];
+  if (!config) return null;
+  try {
+    const absPath = path.join(__dirname, config.path);
+    const model = await tf.loadLayersModel(`file://${absPath}`);
+    let labels = [];
+    const metadataPath = path.join(__dirname, config.labelsPath);
     if (fs.existsSync(metadataPath)) {
       const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
-      models[name].labels = metadata.labels || [];
+      labels = metadata.labels || [];
     }
-
-    console.log(`✅ Loaded model: ${name}`);
+    loadedModels[name] = { model, labels };
+    return loadedModels[name];
   } catch (err) {
     console.error(`❌ Error loading model ${name}:`, err.message);
+    return null;
   }
 }
-
-// Load models at startup
-(async () => {
-  await loadModel("alphabet", "./models/alphabet/model.json");
-  await loadModel("words", "./models/words/model.json");
-})();
 
 // Multer for uploads
 const upload = multer({ storage: multer.memoryStorage() });
@@ -142,32 +140,27 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.post("/predict/:model", upload.single("image"), async (req, res) => {
   try {
     const key = req.params.model;
-    const m = models[key];
-
+    const m = await getModel(key);
     if (!m || !m.model) {
       return res.status(400).json({ error: "Invalid model" });
     }
-
     if (!req.file) {
       return res.status(400).json({ error: "No image uploaded" });
     }
-
     // Decode image to tensor
-    const imageTensor = tf.node
-      .decodeImage(req.file.buffer, 3)
+    const imageTensor = tf.node.decodeImage(req.file.buffer, 3)
       .resizeNearestNeighbor([224, 224])
       .expandDims(0)
       .toFloat()
       .div(tf.scalar(255));
-
     const prediction = m.model.predict(imageTensor);
     const values = await prediction.data();
-
     // Find highest probability
     const maxIndex = values.indexOf(Math.max(...values));
     const label = m.labels[maxIndex] || `Class ${maxIndex}`;
     const confidence = (values[maxIndex] * 100).toFixed(1) + "%";
-
+    // Dispose tensors to free memory
+    tf.dispose([imageTensor, prediction]);
     res.json({ label, confidence });
   } catch (err) {
     console.error("Prediction error:", err.message);
