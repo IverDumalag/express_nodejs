@@ -19,7 +19,8 @@ const API_KEY = process.env.CLOUDINARY_API_KEY;
 const API_SECRET = process.env.CLOUDINARY_API_SECRET;
 const FOLDER_NAME = process.env.CLOUDINARY_FOLDER;
 
-const transporter = nodemailer.createTransport({
+// Nodemailer transporters with fallback support
+const brevoTransporter = nodemailer.createTransport({
   host: "smtp-relay.brevo.com",
   port: 587,
   secure: false,
@@ -27,14 +28,73 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-  connectionTimeout: 60000,
-  greetingTimeout: 30000,
-  socketTimeout: 60000,
+  connectionTimeout: 30000,
+  greetingTimeout: 15000,
+  socketTimeout: 30000,
   pool: true,
-  maxConnections: 5,
+  maxConnections: 3,
   rateDelta: 20000,
   rateLimit: 5,
 });
+
+// Gmail fallback transporter
+const gmailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_PASS,
+  },
+  connectionTimeout: 30000,
+  greetingTimeout: 15000,
+  socketTimeout: 30000,
+});
+
+// Function to send email with multiple fallbacks
+async function sendEmailWithFallback(mailOptions) {
+  const transporters = [
+    { name: 'Brevo', transport: brevoTransporter, condition: () => process.env.SMTP_USER && process.env.SMTP_PASS && process.env.SMTP_PASS !== 'getenv(\'SMTP_PASS\')' },
+    { name: 'Gmail', transport: gmailTransporter, condition: () => process.env.GMAIL_USER && process.env.GMAIL_PASS }
+  ];
+
+  const errors = [];
+
+  for (const { name, transport, condition } of transporters) {
+    if (!condition()) {
+      errors.push(`${name}: Not configured`);
+      continue;
+    }
+
+    try {
+      console.log(`Trying ${name} SMTP...`);
+      
+      // Quick verification with shorter timeout
+      await Promise.race([
+        transport.verify(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`${name} verification timeout`)), 15000)
+        )
+      ]);
+
+      console.log(`${name} verified, sending email...`);
+      
+      // Adjust from address for Gmail
+      const adjustedOptions = { ...mailOptions };
+      if (name === 'Gmail' && process.env.GMAIL_USER) {
+        adjustedOptions.from = `"FSL Express" <${process.env.GMAIL_USER}>`;
+      }
+
+      const info = await transport.sendMail(adjustedOptions);
+      console.log(`Email sent successfully via ${name}:`, info.messageId);
+      return info;
+
+    } catch (error) {
+      console.log(`${name} failed:`, error.message);
+      errors.push(`${name}: ${error.message}`);
+    }
+  }
+
+  throw new Error(`All SMTP services failed: ${errors.join(', ')}`);
+}
 
 app.post("/send-otp", async (req, res) => {
   const { to, otp } = req.body;
@@ -48,14 +108,6 @@ app.post("/send-otp", async (req, res) => {
   }
 
   try {
-    console.log("Verifying SMTP connection...");
-    await Promise.race([
-      transporter.verify(),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("SMTP verification timeout")), 30000)
-      )
-    ]);
-
     const mailOptions = {
       from: "FSL Express <projectz681@gmail.com>",
       to,
@@ -71,34 +123,24 @@ app.post("/send-otp", async (req, res) => {
         </div>`,
     };
 
-    console.log("Sending email...");
-    const info = await Promise.race([
-      transporter.sendMail(mailOptions),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Email send timeout")), 45000)
-      )
-    ]);
-
-    console.log("Email sent successfully:", info.messageId);
+    console.log("Attempting to send email with fallback...");
+    const info = await sendEmailWithFallback(mailOptions);
+    
     res.json({
       success: true,
       messageId: info.messageId,
       message: "OTP sent successfully",
     });
   } catch (err) {
-    console.error("OTP Send Error:", {
-      message: err.message,
-      code: err.code,
-      command: err.command
-    });
+    console.error("OTP Send Error:", err.message);
     
     let errorMessage = "Failed to send OTP";
-    if (err.code === "ETIMEDOUT" || err.message.includes("timeout")) {
+    if (err.message.includes("timeout")) {
       errorMessage = "Connection timeout - please try again in a few moments";
-    } else if (err.code === "EAUTH") {
-      errorMessage = "Authentication failed - please check SMTP credentials";
-    } else if (err.code === "ECONNREFUSED") {
-      errorMessage = "Connection refused - SMTP server unavailable";
+    } else if (err.message.includes("Authentication")) {
+      errorMessage = "Email service authentication failed";
+    } else if (err.message.includes("Not configured")) {
+      errorMessage = "Email service not properly configured";
     }
     
     res.status(500).json({
@@ -111,29 +153,92 @@ app.post("/send-otp", async (req, res) => {
 
 app.get("/test-smtp", async (req, res) => {
   try {
-    console.log("Testing SMTP connection...");
-    const startTime = Date.now();
-    await Promise.race([
-      transporter.verify(),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("SMTP verification timeout after 30s")), 30000)
-      )
-    ]);
-    const endTime = Date.now();
+    console.log("Testing SMTP services...");
+    const results = [];
 
-    res.json({
-      success: true,
-      message: "SMTP connection successful",
-      responseTime: `${endTime - startTime}ms`,
+    // Test Brevo
+    if (process.env.SMTP_USER && process.env.SMTP_PASS && process.env.SMTP_PASS !== 'getenv(\'SMTP_PASS\')') {
+      try {
+        const startTime = Date.now();
+        await Promise.race([
+          brevoTransporter.verify(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Brevo timeout")), 15000)
+          )
+        ]);
+        const endTime = Date.now();
+        results.push({
+          service: "Brevo",
+          success: true,
+          responseTime: `${endTime - startTime}ms`,
+          message: "Connection successful"
+        });
+      } catch (err) {
+        results.push({
+          service: "Brevo",
+          success: false,
+          error: err.message
+        });
+      }
+    } else {
+      results.push({
+        service: "Brevo",
+        success: false,
+        message: "Not configured or using placeholder password"
+      });
+    }
+
+    // Test Gmail
+    if (process.env.GMAIL_USER && process.env.GMAIL_PASS) {
+      try {
+        const startTime = Date.now();
+        await Promise.race([
+          gmailTransporter.verify(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Gmail timeout")), 15000)
+          )
+        ]);
+        const endTime = Date.now();
+        results.push({
+          service: "Gmail",
+          success: true,
+          responseTime: `${endTime - startTime}ms`,
+          message: "Connection successful"
+        });
+      } catch (err) {
+        results.push({
+          service: "Gmail",
+          success: false,
+          error: err.message
+        });
+      }
+    } else {
+      results.push({
+        service: "Gmail",
+        success: false,
+        message: "Not configured"
+      });
+    }
+
+    const hasWorkingService = results.some(r => r.success);
+    
+    res.status(hasWorkingService ? 200 : 500).json({
+      success: hasWorkingService,
+      message: hasWorkingService ? "At least one SMTP service is working" : "All SMTP services failed",
+      results,
+      environment: {
+        brevo_configured: !!(process.env.SMTP_USER && process.env.SMTP_PASS && process.env.SMTP_PASS !== 'getenv(\'SMTP_PASS\')'),
+        gmail_configured: !!(process.env.GMAIL_USER && process.env.GMAIL_PASS),
+        smtp_pass_value: process.env.SMTP_PASS ? (process.env.SMTP_PASS === 'getenv(\'SMTP_PASS\')' ? 'PLACEHOLDER_VALUE' : 'SET') : 'NOT_SET'
+      },
       timestamp: new Date().toISOString()
     });
   } catch (err) {
     console.error("SMTP Test Error:", err);
     res.status(500).json({
       success: false,
-      message: "SMTP connection failed",
+      message: "SMTP test failed",
       error: err.message,
-      code: err.code,
       timestamp: new Date().toISOString()
     });
   }
