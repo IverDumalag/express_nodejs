@@ -12,13 +12,13 @@ build/
 .cache/
 coverage/
 
-# Env & secrets (root and backend)
+# Environment variables & secrets
 .env
 .env.*
-!/backend/.env.example
-/backend/.env
-/backend/.env.*
 !.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
 
 # Logs & runtime
 logs/
@@ -33,8 +33,3 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-
-backend/.env
-backend/.env
-/backend
-backend/.env
