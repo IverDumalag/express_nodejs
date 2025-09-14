@@ -124,7 +124,7 @@ app.post("/send-otp", async (req, res) => {
           <p style="margin:0 0 8px">Hi,</p>
           <p style="margin:0 0 12px">Your OTP code is:</p>
           <p style="font-size:28px; margin:4px 0 16px; font-weight:700; letter-spacing:2px">${String(otp).trim()}</p>
-          <p style="margin:0 0 8px; color:#555">This code will expire shortly. If you didn’t request this, you can ignore this email.</p>
+
           <hr style="border:none; border-top:1px solid #eee; margin:16px 0" />
           <p style="font-size:12px; color:#888; margin:0">FSL Express</p>
         </div>
