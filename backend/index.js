@@ -1,4 +1,60 @@
-const express = require("express");
+const express = requir// Multiple SMTP configurations for better reliability on Render
+const createEmailTransporters = () => {
+  return [
+    {
+      name: "Brevo SMTP",
+      transporter: nodemailer.createTransporter({
+        host: "smtp-relay.brevo.com",
+        port: 587,
+        secure: false,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+        connectionTimeout: 10000,
+        greetingTimeout: 5000,
+        socketTimeout: 10000,
+        tls: {
+          ciphers: 'SSLv3',
+          rejectUnauthorized: false
+        }
+      })
+    },
+    {
+      name: "Brevo SSL",
+      transporter: nodemailer.createTransporter({
+        host: "smtp-relay.brevo.com", 
+        port: 465,
+        secure: true,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+        connectionTimeout: 10000,
+        greetingTimeout: 5000,
+        socketTimeout: 10000,
+        tls: {
+          rejectUnauthorized: false
+        }
+      })
+    },
+    {
+      name: "Gmail Backup",
+      transporter: nodemailer.createTransporter({
+        service: 'gmail',
+        auth: {
+          user: process.env.GMAIL_USER || 'projectz681@gmail.com',
+          pass: process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS,
+        },
+        connectionTimeout: 10000,
+        greetingTimeout: 5000,
+        socketTimeout: 10000,
+      })
+    }
+  ];
+};
+
+const emailTransporters = createEmailTransporters();
 const cors = require("cors");
 const axios = require("axios");
 const dotenv = require("dotenv");
@@ -31,33 +87,137 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// ================= OTP Route =================
+// ================= Enhanced OTP Route with Multiple Providers =================
 app.post("/send-otp", async (req, res) => {
   const { to, otp } = req.body;
 
-  console.log("Sending OTP to:", to);
+  console.log("📧 Attempting to send OTP to:", to);
+  
+  if (!to || !otp) {
+    return res.status(400).json({
+      success: false,
+      message: "Email and OTP are required",
+    });
+  }
+
+  // Email content
+  const mailOptions = {
+    from: '"FSL Express" <projectz681@gmail.com>',
+    to,
+    subject: "🔐 Your FSL Express Verification Code",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #4A90E2; text-align: center;">FSL Express</h2>
+        <h3>Email Verification</h3>
+        <p>Hello!</p>
+        <p>Your verification code is:</p>
+        <div style="background-color: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
+          <h1 style="color: #4A90E2; font-size: 32px; margin: 0; letter-spacing: 5px;">${otp}</h1>
+        </div>
+        <p>This code will expire in 10 minutes for security reasons.</p>
+        <p>If you didn't request this code, please ignore this email.</p>
+        <hr style="margin: 30px 0;">
+        <p style="color: #888; font-size: 12px; text-align: center;">
+          This email was sent from FSL Express registration system.
+        </p>
+      </div>
+    `,
+    text: `Your FSL Express verification code is: ${otp}. This code will expire in 10 minutes.`
+  };
+
+  // Try each email provider
+  for (let i = 0; i < emailTransporters.length; i++) {
+    const { name, transporter } = emailTransporters[i];
+    console.log(`🔄 Attempting ${name}...`);
+    
+    try {
+      // Test connection with short timeout
+      await Promise.race([
+        transporter.verify(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Connection timeout')), 8000)
+        )
+      ]);
+      
+      console.log(`✅ ${name} connection verified`);
+      
+      // Send email with timeout
+      const info = await Promise.race([
+        transporter.sendMail(mailOptions),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Send timeout')), 15000)
+        )
+      ]);
+      
+      console.log(`✅ Email sent successfully via ${name}:`, info.messageId);
+      return res.json({
+        success: true,
+        messageId: info.messageId,
+        message: "OTP sent successfully",
+        provider: name
+      });
+      
+    } catch (err) {
+      console.error(`❌ ${name} failed:`, err.message);
+      
+      // If this is the last provider, return error
+      if (i === emailTransporters.length - 1) {
+        console.error("🚨 All email providers failed");
+        return res.status(500).json({
+          success: false,
+          message: "Email service temporarily unavailable. Please try again later.",
+          error: "All email providers failed",
+          lastError: err.message
+        });
+      }
+      
+      // Continue to next provider
+      console.log(`🔄 Trying next email provider...`);
+      continue;
+    }
+  }
+});
+
+// ================= Simple OTP Endpoint (Alternative) =================
+app.post("/send-otp-simple", async (req, res) => {
+  const { to, otp } = req.body;
+  console.log("📧 Simple OTP send to:", to);
+  
   try {
-    await transporter.verify();
+    // Use only Gmail service which is more reliable on Render
+    const simpleTransporter = nodemailer.createTransporter({
+      service: 'gmail',
+      auth: {
+        user: 'projectz681@gmail.com',
+        pass: process.env.SMTP_PASS,
+      },
+      connectionTimeout: 5000,
+      socketTimeout: 5000,
+    });
 
     const mailOptions = {
-      from: `"FSL Express" <projectz681@gmail.com>`,
+      from: 'projectz681@gmail.com',
       to,
-      subject: "Your OTP Code",
-      html: `<p>Your OTP code is: <b>${otp}</b></p>`,
+      subject: "FSL Express - Verification Code",
+      text: `Your verification code is: ${otp}`,
+      html: `<h3>Your FSL Express verification code is: <strong>${otp}</strong></h3>`
     };
 
-    const info = await transporter.sendMail(mailOptions);
+    const info = await simpleTransporter.sendMail(mailOptions);
+    console.log("✅ Simple email sent:", info.messageId);
+    
     res.json({
       success: true,
       messageId: info.messageId,
-      message: "OTP sent successfully",
+      message: "OTP sent via simple method"
     });
-  } catch (err) {
-    console.error("OTP Send Error:", err);
+    
+  } catch (error) {
+    console.error("❌ Simple OTP failed:", error.message);
     res.status(500).json({
       success: false,
-      message: "Failed to send OTP",
-      error: err.message,
+      message: "Simple email service failed",
+      error: error.message
     });
   }
 });
